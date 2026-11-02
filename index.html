@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="EN">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#F4F8FC">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>砕けた英語訳</title>
+<style>
+  :root {
+    --bg: #F4F8FC; --panel: #FFFFFF; --line: #D9E3EE; --text: #2B3A4A; --sub: #6B7B8C;
+    --accent: #3B7DD8; --accent-dark: #2F6BC0; --rec: #DE3434; --ok: #2E8B57;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Hiragino Sans", "Yu Gothic UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto;
+    padding: calc(env(safe-area-inset-top) + 14px) 16px calc(env(safe-area-inset-bottom) + 20px); }
+  h1 { font-size: 17px; font-weight: 500; color: var(--sub); margin: 0 0 12px; letter-spacing: .02em; }
+  label { display: block; font-size: 16px; color: var(--sub); margin: 0 0 6px; }
+  textarea { width: 100%; font: inherit; font-size: 22px; line-height: 1.5; color: var(--text);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; resize: none; }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  #ja { height: 150px; }
+  .row { display: flex; gap: 12px; margin: 14px 0 22px; }
+  button { font: inherit; font-size: 22px; font-weight: 600; border-radius: 14px; border: 0; padding: 18px 10px;
+    flex: 1; cursor: pointer; }
+  #mic { background: var(--panel); color: var(--text); border: 1px solid var(--line); flex: 0 0 38%; }
+  #mic.rec { background: var(--rec); color: #fff; border-color: var(--rec); }
+  #go { background: var(--accent); color: #fff; }
+  #go:active { background: var(--accent-dark); }
+  #go:disabled { opacity: .55; }
+  #en { min-height: 170px; font-size: 22px; }
+  #copy { width: 100%; margin-top: 12px; background: var(--panel); color: var(--accent); border: 1px solid var(--accent); }
+  #msg { min-height: 28px; margin-top: 12px; font-size: 18px; color: var(--sub); text-align: center; }
+  #msg.ok { color: var(--ok); }
+  #msg.err { color: var(--rec); }
+  #setup { display: none; background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px; font-size: 19px; line-height: 1.6; margin-bottom: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>砕けた英語訳</h1>
+  <div id="setup"></div>
+
+  <label for="ja">日本語</label>
+  <textarea id="ja" placeholder="🎤 を押して話す(キーボードのマイクでも可)"></textarea>
+  <div class="row">
+    <button id="mic" type="button">🎤 話す</button>
+    <button id="go" type="button">英語にする</button>
+  </div>
+
+  <label for="en">英語(自動でコピーします)</label>
+  <textarea id="en" readonly></textarea>
+  <button id="copy" type="button">もう一度コピー</button>
+  <div id="msg"></div>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const KEY_NAME = "kudaketa_eigo_key";
+
+// ---- 鍵(QRコードのアドレスの # のうしろに入っている。サーバーには送られない) ----
+function loadKey() {
+  const m = location.hash.match(/k=([^&]+)/);
+  if (m) {
+    try { localStorage.setItem(KEY_NAME, decodeURIComponent(m[1])); } catch (e) {}
+    return decodeURIComponent(m[1]);
+  }
+  try { return localStorage.getItem(KEY_NAME); } catch (e) { return null; }
+}
+const apiKey = loadKey();
+const standalone = window.navigator.standalone === true;
+if (!apiKey) {
+  $("setup").style.display = "block";
+  $("setup").textContent = "パソコンに出した四角い模様(QRコード)を、iPhone のカメラで写して開いてください。";
+} else if (!standalone && location.hash) {
+  $("setup").style.display = "block";
+  $("setup").innerHTML = "準備ができました ✓<br>下の <b>共有ボタン(□に↑)</b> →「<b>ホーム画面に追加</b>」を押してください。";
+}
+
+// ---- 辞書と指示文(Windows 版と同じ物。Windows で辞書を直すと自動でここに届く) ----
+let PROMPT = null, DICT = [];
+async function loadShared() {
+  const t = Date.now();
+  const [p, d] = await Promise.all([
+    fetch("prompt.json?t=" + t, { cache: "no-store" }).then(r => r.json()),
+    fetch("dict.json?t=" + t, { cache: "no-store" }).then(r => r.json()).catch(() => []),
+  ]);
+  PROMPT = p; DICT = Array.isArray(d) ? d.filter(w => w && w.ja && w.en) : [];
+}
+const shared = loadShared();
+
+function fixWrong(text) {  // 声の聞き違い → 正しい日本語
+  for (const w of DICT) for (const bad of (w.wrong || [])) if (bad) text = text.split(bad).join(w.ja);
+  return text;
+}
+function fixSpelling(post) {  // 辞書の名前を辞書どおりの大文字・小文字に
+  const ws = [...DICT].sort((a, b) => b.en.length - a.en.length);
+  for (const w of ws) {
+    const esc = w.en.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    post = post.replace(new RegExp("(?<![A-Za-z0-9])" + esc + "(?![A-Za-z0-9])", "gi"), w.en);
+  }
+  return post;
+}
+function dictLines() {
+  return DICT.map(w => `- ${w.ja}${w.reading ? `(read: ${w.reading})` : ""} -> ${w.en}`).join("\n");
+}
+
+async function translate(ja) {
+  await shared;
+  let system = PROMPT.system;
+  if (DICT.length) system += PROMPT.dict_header + dictLines();
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: PROMPT.model, max_tokens: 1024, system,
+      thinking: { type: "disabled" },
+      output_config: { format: { type: "json_schema", schema: PROMPT.schema } },
+      messages: [{ role: "user", content: fixWrong(ja) }],
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error((data.error && data.error.message) || ("エラー " + res.status));
+  const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
+  return fixSpelling((JSON.parse(text).post || "").trim());
+}
+
+function say(text, cls) { $("msg").textContent = text; $("msg").className = cls || ""; }
+
+// 「英語にする」: 押した瞬間にコピーの予約をしてから英語にする(iPhone は押した時でないとコピーできないため)
+async function run() {
+  const ja = $("ja").value.trim();
+  if (!ja) { say("先に日本語を話してください", "err"); return; }
+  if (!apiKey) { say("QRコードから開いてください", "err"); return; }
+  $("go").disabled = true; $("en").value = ""; say("英語にしています…");
+  const job = translate(ja);
+  let copied = false;
+  try {
+    if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+      const blob = job.then(t => new Blob([t], { type: "text/plain" }));
+      navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]).then(() => { copied = true; }).catch(() => {});
+    }
+    const en = await job;
+    $("en").value = en;
+    if (!copied) { try { await navigator.clipboard.writeText(en); copied = true; } catch (e) {} }
+    await new Promise(r => setTimeout(r, 150));
+    say(copied ? "コピーしました ✓ Instagram に貼れます" : "「もう一度コピー」を押してください", copied ? "ok" : "");
+  } catch (e) {
+    say("うまくいきませんでした: " + e.message, "err");
+  } finally {
+    $("go").disabled = false;
+  }
+}
+$("go").addEventListener("click", run);
+
+$("copy").addEventListener("click", async () => {
+  const en = $("en").value;
+  if (!en) return;
+  try { await navigator.clipboard.writeText(en); say("コピーしました ✓", "ok"); }
+  catch (e) { $("en").select(); say("長押しでコピーしてください", "err"); }
+});
+
+// ---- 🎤 話す(押して話す → もう一度押すと止めて、そのまま英語にする) ----
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, base = "";
+if (!SR) {
+  $("mic").style.display = "none";
+} else {
+  $("mic").addEventListener("click", () => {
+    if (rec) { rec.stop(); rec = null; $("mic").classList.remove("rec"); $("mic").textContent = "🎤 話す"; run(); return; }
+    rec = new SR();
+    rec.lang = "ja-JP"; rec.continuous = true; rec.interimResults = true;
+    base = "";
+    $("ja").value = "";
+    rec.onresult = (ev) => {
+      let fin = "", mid = "";
+      for (const r of ev.results) (r.isFinal ? (fin += r[0].transcript) : (mid += r[0].transcript));
+      $("ja").value = base + fin + mid;
+    };
+    rec.onerror = (ev) => { say("マイクが使えません(" + ev.error + ")。キーボードのマイクで話してください", "err"); };
+    rec.onend = () => { if (rec) { $("mic").classList.remove("rec"); $("mic").textContent = "🎤 話す"; rec = null; } };
+    rec.start();
+    $("mic").classList.add("rec"); $("mic").textContent = "■ 止めて英語に";
+    say("聞いています…");
+  });
+}
+</script>
+</body>
+</html>
