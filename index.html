@@ -109,6 +109,11 @@ function fixSpelling(post) {  // 辞書の名前を辞書どおりの大文字�
   }
   return post;
 }
+function clean(post) {  // 骸骨などの絵文字と ngl は、出てきても取り除く(Windows 版と同じ)
+  for (const e of ["💀", "☠️", "☠", "🖕"]) post = post.split(e).join("");
+  post = post.replace(/(?<![A-Za-z])ngl(?![A-Za-z])[,.]?\s*/gi, "");
+  return post.replace(/[ \t]{2,}/g, " ").trim();
+}
 function dictLines() {
   return DICT.map(w => `- ${w.ja}${w.reading ? `(read: ${w.reading})` : ""} -> ${w.en}`).join("\n");
 }
@@ -135,7 +140,7 @@ async function translate(ja) {
   const data = await res.json();
   if (!res.ok) throw new Error((data.error && data.error.message) || ("エラー " + res.status));
   const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("");
-  return fixSpelling((JSON.parse(text).post || "").trim());
+  return clean(fixSpelling((JSON.parse(text).post || "").trim()));
 }
 
 function say(text, cls) { $("msg").textContent = text; $("msg").className = cls || ""; }
